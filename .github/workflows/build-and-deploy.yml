@@ -1,0 +1,137 @@
+name: Build and Deploy to Booking Sandbox
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  GHCR_REPO: ghcr.io/nofireai/demo
+
+jobs:
+  build_and_push_images:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        file_tag:
+          - file: ./src/accounting/Dockerfile
+            tag_suffix: accounting
+          - file: ./src/ad/Dockerfile
+            tag_suffix: ad
+          - file: ./src/cart/src/Dockerfile
+            tag_suffix: cart
+          - file: ./src/checkout/Dockerfile
+            tag_suffix: checkout
+          - file: ./src/currency/Dockerfile
+            tag_suffix: currency
+          - file: ./src/email/Dockerfile
+            tag_suffix: email
+          - file: ./src/flagd-ui/Dockerfile
+            tag_suffix: flagd-ui
+          - file: ./src/fraud-detection/Dockerfile
+            tag_suffix: fraud-detection
+          - file: ./src/frontend/Dockerfile
+            tag_suffix: frontend
+          - file: ./src/frontend-proxy/Dockerfile
+            tag_suffix: frontend-proxy
+          - file: ./src/image-provider/Dockerfile
+            tag_suffix: image-provider
+          - file: ./src/kafka/Dockerfile
+            tag_suffix: kafka
+          - file: ./src/llm/Dockerfile
+            tag_suffix: llm
+          - file: ./src/load-generator/Dockerfile
+            tag_suffix: load-generator
+          - file: ./src/opensearch/Dockerfile
+            tag_suffix: opensearch
+          - file: ./src/payment/Dockerfile
+            tag_suffix: payment
+          - file: ./src/product-catalog/Dockerfile
+            tag_suffix: product-catalog
+          - file: ./src/product-reviews/Dockerfile
+            tag_suffix: product-reviews
+          - file: ./src/quote/Dockerfile
+            tag_suffix: quote
+          - file: ./src/recommendation/Dockerfile
+            tag_suffix: recommendation
+          - file: ./src/shipping/Dockerfile
+            tag_suffix: shipping
+          - file: ./test/tracetesting/Dockerfile
+            tag_suffix: traceBasedTests
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set short SHA
+        run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      - name: Load .env build args
+        run: grep -vE '^\s*#|^\s*$' .env >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          buildkitd-config-inline: |
+            [worker.oci]
+            max-parallelism = 2
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./
+          file: ${{ matrix.file_tag.file }}
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            OTEL_JAVA_AGENT_VERSION=${{ env.OTEL_JAVA_AGENT_VERSION }}
+            OPENTELEMETRY_CPP_VERSION=${{ env.OPENTELEMETRY_CPP_VERSION }}
+            TRACETEST_IMAGE_VERSION=${{ env.TRACETEST_IMAGE_VERSION }}
+          tags: |
+            ${{ env.GHCR_REPO }}:main-${{ env.SHORT_SHA }}-${{ matrix.file_tag.tag_suffix }}
+            ${{ env.GHCR_REPO }}:main-${{ matrix.file_tag.tag_suffix }}
+          cache-from: type=gha
+          cache-to: type=gha
+
+  update_gitops:
+    runs-on: ubuntu-latest
+    needs: build_and_push_images
+    steps:
+      - name: Checkout gitops repo
+        uses: actions/checkout@v4
+        with:
+          repository: NOFireAI/gitops
+          token: ${{ secrets.GITOPS_PAT }}
+          ref: main
+
+      - name: Update image tag in otel-values.yaml
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          VALUES_FILE="base/workloads/demo/otel-values.yaml"
+
+          yq -i '.default.image.repository = "ghcr.io/nofireai/demo"' "$VALUES_FILE"
+          yq -i ".default.image.tag = \"main-${SHORT_SHA}\"" "$VALUES_FILE"
+
+      - name: Commit and push
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add base/workloads/demo/otel-values.yaml
+          git commit -m "chore: bump otel-demo images to main-${SHORT_SHA}
+
+          Source: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
+          git push
