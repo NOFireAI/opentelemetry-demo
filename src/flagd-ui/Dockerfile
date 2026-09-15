@@ -16,7 +16,9 @@
 #
 ARG ELIXIR_VERSION=1.19.3
 ARG OTP_VERSION=28.0.2
-ARG DEBIAN_VERSION=bullseye-20251117-slim
+# Debian 11 (bullseye) reached end of LTS on 2026-08-31 and its security
+# repository was removed, so apt-get in the runner stage fails with 404s.
+ARG DEBIAN_VERSION=bookworm-20260610-slim
 
 ARG BUILDER_IMAGE="docker.io/hexpm/elixir:${ELIXIR_VERSION}-erlang-${OTP_VERSION}-debian-${DEBIAN_VERSION}"
 ARG RUNNER_IMAGE="docker.io/debian:${DEBIAN_VERSION}"
